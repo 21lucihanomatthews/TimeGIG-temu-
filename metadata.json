@@ -1,0 +1,6 @@
+{
+  "name": "TimeGIG",
+  "description": "A marketplace portal for gigs and seekers with built-in wallet and business directory.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
