@@ -388,6 +388,7 @@ export default function App() {
   });
   const [cashTrigger, setCashTrigger] = useState(0);
   const [needleTrigger, setNeedleTrigger] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
   useCashSound(cashTrigger, walletSoundsEnabled);
   useNeedleDropSound(needleTrigger, walletSoundsEnabled);
@@ -451,6 +452,79 @@ export default function App() {
       localStorage.removeItem("timeGigAdmin");
     }
   }, [isAdminAuthenticated]);
+
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        const [gigsRes, seekersRes, businessesRes, appsRes, txRes] = await Promise.all([
+          fetch("/api/supabase/gigs"),
+          fetch("/api/supabase/seekers"),
+          fetch("/api/supabase/businesses"),
+          fetch("/api/supabase/applications"),
+          fetch("/api/supabase/transactions")
+        ]);
+
+        const [gigs, seekers, businesses, apps, txs] = await Promise.all([
+          gigsRes.json(),
+          seekersRes.json(),
+          businessesRes.json(),
+          appsRes.json(),
+          txRes.json()
+        ]);
+
+        if (gigs.data?.length) setAllGigs(gigs.data);
+        if (seekers.data?.length) setAllSeekers(seekers.data);
+        if (businesses.data?.length) setAllBusinesses(businesses.data);
+        if (apps.data?.length) setApplications(apps.data);
+        if (txs.data?.length) setTransactions(txs.data);
+      } catch (err) {
+        console.error("Error fetching data:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialData();
+  }, []);
+
+  const saveToSupabase = async (table: string, data: any) => {
+    try {
+      const response = await fetch(`/api/supabase/${table}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+      return await response.json();
+    } catch (err) {
+      console.error(`Error saving to ${table}:`, err);
+      return { error: err };
+    }
+  };
+
+  const uploadFile = async (file: File, bucket: string, path: string) => {
+    return new Promise<{url?: string; error?: string}>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = (reader.result as string).split(',')[1];
+        try {
+          const response = await fetch("/api/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              bucket,
+              path,
+              fileBase64: base64,
+              contentType: file.type
+            })
+          });
+          resolve(await response.json());
+        } catch (err: any) {
+          resolve({ error: err.message });
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
 
   useEffect(() => {
     const swingTimer = setTimeout(() => {
@@ -1331,29 +1405,32 @@ export default function App() {
     }));
   };
 
-  const handleProfileIdUploadChange = (seekerId: number, e: ChangeEvent<HTMLInputElement>) => {
+  const handleProfileIdUploadChange = async (seekerId: number, e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = reader.result as string;
+    for (const file of files) {
+      const { url, error } = await uploadFile(file, "docs", `profile-${seekerId}-${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+        continue;
+      }
+      if (url) {
         setAllSeekers(prev => prev.map(s => {
           if (s.id === seekerId) {
             const currentDocs = s.idDocuments || [];
-            const updated = { ...s, idDocuments: [...currentDocs, base64] };
+            const updated = { ...s, idDocuments: [...currentDocs, url] };
             if (currentUserProfile?.id === s.id) {
               setCurrentUserProfile(updated);
             }
             if (selectedSeeker?.id === s.id) {
               setSelectedSeeker(updated);
             }
+            saveToSupabase("seekers", updated);
             return updated;
           }
           return s;
         }));
-      };
-      reader.readAsDataURL(file);
-    });
+      }
+    }
   };
 
   const handleUpdateIdPrivacy = (seekerId: number, val: "none" | "gigs" | "verified" | "all") => {
@@ -1388,53 +1465,57 @@ export default function App() {
     }));
   };
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
     
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setNewGigImages(prev => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleWallpaperChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []) as File[];
-    
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setBackgroundImages(prev => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const handleAvatarChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setSeekerAvatar(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+    for (const file of files) {
+      const { url, error } = await uploadFile(file, "gigs", `${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setNewGigImages(prev => [...prev, url]);
+      }
     }
   };
 
-  const handleBizLogoChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setBizLogo(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+  const handleWallpaperChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []) as File[];
+    
+    for (const file of files) {
+      const { url, error } = await uploadFile(file, "wallpapers", `${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setBackgroundImages(prev => [...prev, url]);
+      }
     }
   };
 
-  const handleCreateGigSubmit = () => {
+  const handleAvatarChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const { url, error } = await uploadFile(file, "avatars", `${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setSeekerAvatar(url);
+      }
+    }
+  };
+
+  const handleBizLogoChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const { url, error } = await uploadFile(file, "logos", `${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setBizLogo(url);
+      }
+    }
+  };
+
+  const handleCreateGigSubmit = async () => {
     const freshGig: Gig = {
       id: Date.now(),
       title: newGigTitle,
@@ -1444,6 +1525,8 @@ export default function App() {
       category: "Personal Task",
       images: newGigImages
     };
+
+    await saveToSupabase("gigs", freshGig);
     
     // Add real-time update on latest gigs
     const newAlert = {
@@ -1465,15 +1548,16 @@ export default function App() {
     setAppStep("seeker_video");
   };
 
-  const handleSeekerDocsChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleSeekerDocsChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setSeekerDocs(prev => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
+    for (const file of files) {
+      const { url, error } = await uploadFile(file, "docs", `seeker-${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setSeekerDocs(prev => [...prev, url]);
+      }
+    }
   };
 
   const startScanningSeekerDocs = () => {
@@ -1497,15 +1581,16 @@ export default function App() {
     }, 50);
   };
 
-  const handleBizDocsChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleBizDocsChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setBizDocs(prev => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
+    for (const file of files) {
+      const { url, error } = await uploadFile(file, "docs", `biz-${Date.now()}-${file.name}`);
+      if (error) {
+        alert("Upload failed: " + error);
+      } else if (url) {
+        setBizDocs(prev => [...prev, url]);
+      }
+    }
   };
 
   const startScanningDocs = () => {
@@ -1532,6 +1617,8 @@ export default function App() {
               logo: bizLogo || undefined,
               isVerified: true
             };
+            
+            saveToSupabase("businesses", newBiz);
             
             // Calculate and award coin bonuses
             const signupBonus = 10;
@@ -1560,6 +1647,7 @@ export default function App() {
               });
             }
             setTransactions(prev => [...txs, ...prev]);
+            txs.forEach(tx => saveToSupabase("transactions", tx));
 
             // Broadcast business registation update alert
             const newAlert = {
@@ -1587,7 +1675,7 @@ export default function App() {
     setAppStep("business_docs");
   };
 
-  const handleConfirmSeeker = (include: boolean) => {
+  const handleConfirmSeeker = async (include: boolean) => {
     if (include) {
       const newSeeker: Seeker = {
         id: Date.now(),
@@ -1604,6 +1692,8 @@ export default function App() {
         location: seekerCategory === "Creative" ? "Remote" : "Local Area",
         isVerified: true
       };
+
+      await saveToSupabase("seekers", newSeeker);
       
       // Calculate and award coin bonuses
       const signupBonus = 10;
@@ -3451,27 +3541,33 @@ export default function App() {
           </div>
           
           <button 
-              onClick={() => {
+              onClick={async () => {
                   if (!proofFile) return;
-                  const reader = new FileReader();
-                  reader.onloadend = () => {
-                      setTransactions(prev => [{
-                        id: Date.now(),
-                        type: "topup",
-                        amount: 0,
-                        desc: `Pending: ${selectedPackage} Coins`,
-                        date: "Pending Review",
-                        proof: reader.result as string,
-                        status: "pending",
-                        coinAmount: selectedPackage
-                      }, ...prev]);
-                      setAppStep("list");
-                      setSelectedPackage(null);
-                      setProofFile(null);
-                      setShowSentMessage(true);
-                      setTimeout(() => setShowSentMessage(false), 3000);
+                  const { url, error } = await uploadFile(proofFile, "proofs", `${Date.now()}-${proofFile.name}`);
+                  if (error) {
+                      alert("Upload failed: " + error);
+                      return;
+                  }
+                  
+                  const newTx: Transaction = {
+                    id: Date.now(),
+                    type: "topup",
+                    amount: 0,
+                    desc: `Pending: ${selectedPackage} Coins`,
+                    date: "Pending Review",
+                    proof: url,
+                    status: "pending",
+                    coinAmount: selectedPackage || 0
                   };
-                  reader.readAsDataURL(proofFile);
+
+                  setTransactions(prev => [newTx, ...prev]);
+                  saveToSupabase("transactions", newTx);
+                  
+                  setAppStep("list");
+                  setSelectedPackage(null);
+                  setProofFile(null);
+                  setShowSentMessage(true);
+                  setTimeout(() => setShowSentMessage(false), 3000);
               }}
               disabled={!proofFile}
               className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-xs disabled:opacity-50"
